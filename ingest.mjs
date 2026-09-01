@@ -1,14 +1,14 @@
 // ingest.mjs
-// One-time script: reads markdown notes from ./vault, chunks them,
-// generates embeddings via Voyage AI (batched across ALL notes at once),
-// and inserts into Supabase.
+// One-time script: recursively reads markdown notes from ./vault (folders
+// supported), chunks them, generates embeddings via Voyage AI (batched
+// across ALL notes at once), and inserts into Supabase.
 //
 // Setup:
 //   npm install @supabase/supabase-js gray-matter
 //
 // Env vars required (export/set these in your shell before running):
 //   SUPABASE_URL
-//   SUPABASE_SERVICE_ROLE_KEY   (or your project's "secret" key — service_role/secret, never anon/publishable)
+//   SUPABASE_SERVICE_ROLE_KEY   (or your project's "secret" key)
 //   VOYAGE_API_KEY
 //
 // Run:
@@ -24,9 +24,6 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const VOYAGE_API_KEY = process.env.VOYAGE_API_KEY;
 const VAULT_DIR = './vault';
 
-// Voyage's per-request cap is 128 texts. Without a payment method on file,
-// the account is also limited to 3 requests/minute — so if we ever need
-// more than one batch, we pace requests with this gap.
 const EMBED_BATCH_SIZE = 128;
 const FREE_TIER_GAP_MS = 21000;
 
@@ -36,6 +33,40 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY || !VOYAGE_API_KEY) {
 }
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// Recursively walks VAULT_DIR and returns every .md file's path relative
+// to the vault root (e.g. "Projects/aura.md"), so subfolders are supported.
+function walkVault(dir, baseDir = dir) {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  let results = [];
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results = results.concat(walkVault(fullPath, baseDir));
+    } else if (entry.name.endsWith('.md')) {
+      results.push(path.relative(baseDir, fullPath).split(path.sep).join('/'));
+    }
+  }
+  return results;
+}
+
+// Extracts Obsidian-style [[Wikilinks]] from note content.
+// Handles [[Note Name]], [[Note Name|Display Text]], and [[Note Name#Heading]] —
+// in all cases we only want the note name itself.
+function extractWikilinks(text) {
+  const matches = [...text.matchAll(/\[\[([^\]|#]+)/g)];
+  const names = matches.map((m) => m[1].trim());
+  return [...new Set(names)];
+}
+
+// Extracts Obsidian-style #tags. Requires no space after '#' (so this
+// naturally skips markdown headings like "# Title", which do have a space).
+// Obsidian tags can be nested, e.g. #project/active.
+function extractTags(text) {
+  const matches = [...text.matchAll(/#([a-zA-Z0-9_/-]+)/g)];
+  const tags = matches.map((m) => m[1].trim());
+  return [...new Set(tags)];
+}
 
 function chunkText(text, chunkSize = 300, overlap = 50) {
   const words = text.split(/\s+/).filter(Boolean);
@@ -58,7 +89,7 @@ async function embedBatch(texts) {
     },
     body: JSON.stringify({
       input: texts,
-      model: 'voyage-3.5', // 1024-dim default — matches the chunks table
+      model: 'voyage-3.5',
       input_type: 'document',
     }),
   });
@@ -74,43 +105,55 @@ function sleep(ms) {
 }
 
 async function ingestVault() {
-  const files = fs.readdirSync(VAULT_DIR).filter((f) => f.endsWith('.md'));
-  console.log(`Found ${files.length} notes in ${VAULT_DIR}`);
+  const files = walkVault(VAULT_DIR); // relative paths, e.g. "Projects/aura.md"
+  console.log(`Found ${files.length} notes in ${VAULT_DIR} (including subfolders)`);
 
   // --- Step 1: parse + chunk every note locally (no network calls yet) ---
-  const parsedNotes = files.map((file) => {
-    const raw = fs.readFileSync(path.join(VAULT_DIR, file), 'utf-8');
+  const parsedNotes = files.map((relPath) => {
+    const raw = fs.readFileSync(path.join(VAULT_DIR, relPath), 'utf-8');
     const { data: frontmatter, content } = matter(raw);
-    const title = frontmatter.title || file.replace(/\.md$/, '');
-    return { file, title, content, chunks: chunkText(content) };
+    // Title comes from the filename only, independent of folder --
+    // this keeps [[wikilinks]] resolvable regardless of where a note lives.
+    const title = frontmatter.title || path.basename(relPath, '.md');
+    return {
+      path: relPath,
+      title,
+      content,
+      chunks: chunkText(content),
+      links: extractWikilinks(content),
+      tags: extractTags(content),
+    };
   });
 
   // --- Step 2: upsert notes (cheap Supabase calls, not rate-limited) ---
-  const noteIdByFile = {};
+  const noteIdByPath = {};
   for (const note of parsedNotes) {
     const { data, error } = await supabase
       .from('notes')
-      .upsert({ title: note.title, path: note.file, content: note.content }, { onConflict: 'path' })
+      .upsert(
+        { title: note.title, path: note.path, content: note.content, links: note.links, tags: note.tags },
+        { onConflict: 'path' },
+      )
       .select()
       .single();
 
     if (error) {
-      console.error(`Failed to upsert note ${note.file}:`, error.message);
+      console.error(`Failed to upsert note ${note.path}:`, error.message);
       continue;
     }
-    noteIdByFile[note.file] = data.id;
+    noteIdByPath[note.path] = data.id;
     await supabase.from('chunks').delete().eq('note_id', data.id); // clean slate for re-runs
   }
 
   // --- Step 3: flatten every chunk across every note into one list ---
   const chunkRefs = [];
   for (const note of parsedNotes) {
-    if (!noteIdByFile[note.file]) continue; // skip notes that failed to upsert
+    if (!noteIdByPath[note.path]) continue;
     for (const chunkContent of note.chunks) {
-      chunkRefs.push({ file: note.file, noteId: noteIdByFile[note.file], content: chunkContent });
+      chunkRefs.push({ path: note.path, noteId: noteIdByPath[note.path], content: chunkContent });
     }
   }
-  console.log(`Embedding ${chunkRefs.length} chunks total across ${Object.keys(noteIdByFile).length} notes`);
+  console.log(`Embedding ${chunkRefs.length} chunks total across ${Object.keys(noteIdByPath).length} notes`);
 
   // --- Step 4: embed in batches of up to 128, pacing requests if there's more than one ---
   const allEmbeddings = [];
@@ -122,7 +165,6 @@ async function ingestVault() {
       allEmbeddings.push(...embeddings);
     } catch (err) {
       console.error(`Batch starting at chunk ${i} failed:`, err.message);
-      // fill with nulls so indexes stay aligned; these rows get skipped below
       allEmbeddings.push(...new Array(batch.length).fill(null));
     }
     if (i + EMBED_BATCH_SIZE < chunkRefs.length) {

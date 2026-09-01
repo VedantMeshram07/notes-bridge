@@ -1,5 +1,9 @@
 # AURA - AI-Powered Mental Health Companion
+#ai-agents #mental-health
+See also [[rag]] for another agentic AI system in this portfolio.
 
+
+See also [[techcarvaan]] for a comparison of a differently-structured project.
 A comprehensive mental health support application featuring multiple AI agents working together to provide personalized care, crisis intervention, and therapeutic resources.
 
 ## 🌟 New Features (Latest Update)

@@ -1,7 +1,12 @@
-# TechCarvaan 2.O
-
+# TechCarvaan 
+See also [[aura]] for a comparison of a differently-structured project.
 This project is a College Techfest Website (TechCarvaan) built using Laravel, React.js, Inertia.js, and Tailwind CSS, with Vite as the build tool. The platform includes a homepage with animations, admin login, and dashboard management.
+#web-dev #college-project
 
+See also [[aura]] and [[rag]] for AI-focused projects in this portfolio.
+
+## Notes
+Good reference for a Laravel + Inertia.js setup if I build something similar again. Storage symlink step is easy to forget.
 ## Prerequisites
 
 Before you start, ensure you have the following software installed on your machine:

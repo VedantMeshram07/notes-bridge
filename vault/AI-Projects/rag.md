@@ -1,5 +1,7 @@
 # Automated RAG System — Autonomous Document Intelligence
+#ai-agents #rag
 
+See also [[aura]] for another agentic AI system, and [[techcarvaan]] for a differently-structured, non-AI project.
 An agentic document Q&A system that transforms static, unstructured PDFs into dynamic, queryable knowledge. The system ingests complex PDF documents (including tables, figures, and narrative text), indexes them into a vector store, and uses autonomous LLM agents to answer multi-step queries with mathematical accuracy } and verifiable citations.
 
 Built as two independent approaches to the same problem — each with different trade-offs between determinism, flexibility, and API cost.
