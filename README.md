@@ -1,5 +1,8 @@
 # Notes Bridge
 
+**Live demo:** https://notes-bridge-ai.lovable.app
+**Repository:** https://github.com/VedantMeshram07/notes-bridge
+
 An Obsidian Vault Knowledge Base + RAG Email Sender, built for The Skillians'
 Generative AI Developer Build Sprint. Ask questions across an Obsidian vault
 and get answers grounded in your actual notes, or have a multi-agent pipeline
